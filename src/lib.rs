@@ -85,7 +85,7 @@ impl FileProperties {
             Self::NTFS_ACCESS_CONTROL_LIST => "/copy:S",
             Self::OWNER_INFO => "/copy:O",
             Self::AUDITING_INFO => "/copy:U",
-            Self::ALL => "/copy:DATSU",
+            Self::ALL => "/copy:DATSOU",
             Self::_MULTIPLE(props) => {
                 let part = ['D', 'A', 'T', 'S', 'O', 'U'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
                 full = String::from("/copy:") + part.as_str();
@@ -169,13 +169,13 @@ impl DirectoryProperties {
     pub fn as_os_string(&self) -> OsString {
         let full ;
         OsString::from(match self {
-            Self::DATA => "/copyd:D",
-            Self::ATTRIBUTES => "/copyd:A",
-            Self::TIME_STAMPS => "/copyd:T",
-            Self::NTFS_ACCESS_CONTROL_LIST => "/copyd:S",
-            Self::OWNER_INFO => "/copy:O",
-            Self::AUDITING_INFO => "/copyd:U",
-            Self::ALL => "/copyd:DATSU",
+            Self::DATA => "/dcopy:D",
+            Self::ATTRIBUTES => "/dcopy:A",
+            Self::TIME_STAMPS => "/dcopy:T",
+            Self::NTFS_ACCESS_CONTROL_LIST => "/dcopy:S",
+            Self::OWNER_INFO => "/dcopy:O",
+            Self::AUDITING_INFO => "/dcopy:U",
+            Self::ALL => "/dcopy:DATSOU",
             Self::_MULTIPLE(props) => {
                 let part = ['D', 'A', 'T', 'S', 'O', 'U'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
                 full = String::from("/copy:") + part.as_str();
@@ -385,6 +385,7 @@ pub enum OkExitCode{
     SOME_COPIES_MISSMATCHES_EXTRA_FOUND = 7,
 }
 
+#[derive(Debug)]
 #[repr(i8)]
 pub enum ErrExitCode{
     FAIL = 8,
