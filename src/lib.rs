@@ -163,7 +163,7 @@ impl DirectoryProperties {
             Self::DATA => "/dcopy:D",
             Self::ATTRIBUTES => "/dcopy:A",
             Self::TIME_STAMPS => "/dcopy:T",
-            Self::ALL => "/dcopy:DATSOU",
+            Self::ALL => "/dcopy:DAT",
             Self::_MULTIPLE(props) => {
                 let part = ['D', 'A', 'T'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
                 full = String::from("/dcopy:") + part.as_str();
