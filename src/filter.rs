@@ -1,4 +1,4 @@
-use std::{convert::TryInto, ops::Add};
+use std::{convert::TryInto, ffi::OsString, ops::Add};
 use crate::FileAttributes;
 
 #[derive(Clone)]
@@ -67,7 +67,7 @@ impl FileExclusionFilter {
         }
     }
 
-    pub fn single_properties(&self) -> Vec<FileExclusionFilter> {
+    pub fn single_filters(&self) -> Vec<FileExclusionFilter> {
         match self {
             Self::_MULTIPLE(attribs, path_or_name, props) => {
                 Self::VARIANTS.iter().zip(props.iter()).filter(|(_, exists)| **exists).map(|(variant, _)| variant.clone() ).collect()
@@ -75,9 +75,26 @@ impl FileExclusionFilter {
             prop => vec![prop.clone()],
         }
     }
+
+    pub fn as_os_string_vec(&self) -> Vec<OsString> {
+        let mut res = Vec::new();
+        self.single_filters().iter().for_each(|filter| match filter {
+            Self::Attributes(file_attributes) => res.push(OsString::from(String::from("/xa:") + file_attributes.as_os_string().to_str().unwrap())),
+            Self::PATH_OR_NAME(path_or_name) => {
+                res.push(OsString::from("/xf"));
+                path_or_name.into_iter().for_each(|path_or_name| res.push(OsString::from(path_or_name.as_str())));
+            },
+            Self::CHANGED => res.push(OsString::from("/xc")),
+            Self::OLDER => res.push(OsString::from("/xo")),
+            Self::NEWER => res.push(OsString::from("/xn")),
+            Self::JUNCTION_POINTS => res.push(OsString::from("/xjf")),
+            _ => unreachable!()
+        });
+        res
+    }
 }
 
-
+#[derive(Clone)]
 pub enum DirectoryExclusionFilter {
     PATH_OR_NAME(Vec<String>),
     JUNCTION_POINTS,
@@ -109,12 +126,25 @@ impl Add for DirectoryExclusionFilter {
 }
 
 impl DirectoryExclusionFilter {
-    fn single_properties(&self) -> Vec<DirectoryExclusionFilter> {
+    fn single_filters(&self) -> Vec<DirectoryExclusionFilter> {
         match self {
             Self::_BOTH(path_or_name) => vec![Self::JUNCTION_POINTS, Self::PATH_OR_NAME(path_or_name.clone())],
             Self::JUNCTION_POINTS => vec![Self::JUNCTION_POINTS],
             Self::PATH_OR_NAME(path_or_name) => vec![Self::PATH_OR_NAME(path_or_name.clone())]
         }
+    }
+    
+    pub fn as_os_string_vec(&self) -> Vec<OsString> {
+        let mut res = Vec::new();
+        self.single_filters().iter().for_each(|filter| match filter {
+            Self::PATH_OR_NAME(path_or_name) => {
+                res.push(OsString::from("/xd"));
+                path_or_name.into_iter().for_each(|path_or_name| res.push(OsString::from(path_or_name.as_str())));
+            },
+            Self::JUNCTION_POINTS => res.push(OsString::from("/xjd")),
+            _ => unreachable!()
+        });
+        res
     }
 }
 
@@ -163,7 +193,7 @@ impl FileAndDirectoryExclusionFilter {
         }
     }
 
-    pub fn single_properties(&self) -> Vec<FileAndDirectoryExclusionFilter> {
+    pub fn single_filters(&self) -> Vec<FileAndDirectoryExclusionFilter> {
         match self {
             Self::_MULTIPLE(filters) => {
                 Self::VARIANTS.iter().zip(filters.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
@@ -171,6 +201,17 @@ impl FileAndDirectoryExclusionFilter {
             attrib => vec![*attrib],
         }
     }
+
+    pub fn as_os_string_vec(&self) -> Vec<OsString> {
+        let mut res = Vec::new();
+        self.single_filters().iter().for_each(|filter| match filter {
+            Self::EXTRA => res.push(OsString::from("/xx")),
+            Self::LONELY => res.push(OsString::from("/xl")),
+            Self::JUNCTION_POINTS => res.push(OsString::from("/xj")),
+            _ => unreachable!()
+        });
+        res
+    }    
 }
 
 #[derive(Copy, Clone)]
@@ -218,7 +259,7 @@ impl FileExclusionFilterException {
         }
     }
 
-    pub fn single_properties(&self) -> Vec<FileExclusionFilterException> {
+    pub fn single_filters(&self) -> Vec<FileExclusionFilterException> {
         match self {
             Self::_MULTIPLE(filters) => {
                 Self::VARIANTS.iter().zip(filters.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
@@ -226,10 +267,21 @@ impl FileExclusionFilterException {
             attrib => vec![*attrib],
         }
     }
+    
+    pub fn as_os_string_vec(&self) -> Vec<OsString> {
+        let mut res = Vec::new();
+        self.single_filters().iter().for_each(|filter| match filter {
+            Self::MODIFIED => res.push(OsString::from("/im")),
+            Self::SAME => res.push(OsString::from("/is")),
+            Self::TWEAKED => res.push(OsString::from("/it")),
+            _ => unreachable!()
+        });
+        res
+    }
 }
 
 
-pub struct FileAndDirectoryFilter<'a> {
+pub struct Filter<'a> {
     pub handle_archive_and_reset: bool,
     pub include_only_files_with_any_of_these_attribs: Option<FileAttributes>,
     
@@ -247,4 +299,54 @@ pub struct FileAndDirectoryFilter<'a> {
     
     pub max_last_access_date: Option<&'a str>,
     pub min_last_access_date: Option<&'a str>,
+}
+
+impl<'a> Filter<'a> {
+    pub fn as_os_string_vec(&self) -> Vec<OsString> {
+        let mut res = Vec::new();
+        
+        if self.handle_archive_and_reset {
+            res.push(OsString::from("/m"));
+        }
+        if let Some(attribs) = self.include_only_files_with_any_of_these_attribs {
+            res.push(OsString::from(String::from("/ia:") + attribs.as_os_string().to_str().unwrap()));
+        }
+
+        if let Some(filter) = self.file_exclusion_filter.clone() {
+            res.append(&mut filter.as_os_string_vec());
+        }
+        if let Some(filter) = self.directory_exclusion_filter.clone() {
+            res.append(&mut filter.as_os_string_vec());
+        }
+        if let Some(filter) = self.file_and_directory_exclusion_filter {
+            res.append(&mut filter.as_os_string_vec());
+        }
+
+        if let Some(filter) = self.file_exclusion_filter_exceptions {
+            res.append(&mut filter.as_os_string_vec());
+        }
+
+        if let Some(max_size) = self.max_size {
+            res.push(OsString::from(format!("/max:{}", max_size)));
+        }
+        if let Some(min_size) = self.min_size {
+            res.push(OsString::from(format!("/min:{}", min_size)));
+        }
+        
+        if let Some(max_age) = self.max_age {
+            res.push(OsString::from(format!("/maxage:{}", max_age)));
+        }
+        if let Some(min_age) = self.min_age {
+            res.push(OsString::from(format!("/minage:{}", min_age)));
+        }
+
+        if let Some(max_lad) = self.max_last_access_date {
+            res.push(OsString::from(format!("/maxage:{}", max_lad)));
+        }
+        if let Some(min_lad) = self.min_last_access_date {
+            res.push(OsString::from(format!("/minage:{}", min_lad)));
+        }
+
+        res
+    }
 }

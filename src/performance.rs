@@ -1,4 +1,4 @@
-use std::{convert::TryInto, ops::Add};
+use std::{convert::TryInto, ffi::OsString, ops::Add};
 
 /// Only one
 #[derive(PartialEq, Copy, Clone)]
@@ -7,6 +7,16 @@ pub enum PerformanceChoice {
     InterPacketGap(usize), // todo max
     Default, // Threads thread, how many (case None = default) or how big the gap
             // when adding this variant implies usage of the other variant
+}
+
+impl PerformanceChoice {
+    pub fn as_os_string(&self) -> Option<OsString> {
+        match self {
+            Self::Threads(threads) => Some(OsString::from(format!("/MT:{}", threads))),
+            Self::InterPacketGap(gap) => Some(OsString::from(format!("/ipg:{}", gap))),
+            _ => None
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -68,7 +78,7 @@ impl Add for PerformanceOptions {
                 }
 
                 if let Some(index) = filter.index() {
-                    result_filters[filter.index().unwrap()] = true; 
+                    result_filters[index] = true; 
                 }
             }
         }
@@ -88,7 +98,7 @@ impl PerformanceOptions {
         }
     }
 
-    pub fn single_properties(&self) -> Vec<PerformanceOptions> {
+    pub fn single_options(&self) -> Vec<PerformanceOptions> {
         match self {
             Self::_MULTIPLE(filters, choice) => {
                 let variants: [Self; 3] = [
@@ -103,7 +113,7 @@ impl PerformanceOptions {
         }
     }
 
-    fn performance_choice(&self) -> PerformanceChoice {
+    pub fn performance_choice(&self) -> PerformanceChoice {
         match self {
             Self::PERFORMANCE_CHOICE_ONLY(choice) | 
             Self::DONT_OFFLOAD(choice) | 
@@ -112,5 +122,22 @@ impl PerformanceOptions {
             Self::_MULTIPLE(_, choice) => *choice,
             Self::Default => PerformanceChoice::Default
         }
+    }
+    
+    pub fn as_os_string_vec(&self) -> Vec<OsString> {
+        let mut res = match self.performance_choice().as_os_string() {
+            Some(os_string) => vec![os_string],
+            None => Vec::new()
+        };
+
+        self.single_options().iter().for_each(|filter| match filter {
+            Self::DONT_OFFLOAD(_) => res.push(OsString::from("/nooffload")),
+            Self::REQUEST_NETWORK_COMPRESSION(_) => res.push(OsString::from("/compress")),
+            Self::COPY_RATHER_THAN_FOLLOW_LINK(_) => res.push(OsString::from("/sl")),
+            Self::PERFORMANCE_CHOICE_ONLY(_) | Self::Default => (),
+            _ => unreachable!()
+        });
+
+        res
     }
 }
