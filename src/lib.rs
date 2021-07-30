@@ -116,7 +116,7 @@ impl Add for DirectoryProperties {
             Self::ALL => [true; 3],
             prop => {
                 let mut val = 2_u8.pow(prop.index().unwrap() as u32) + 2_u8; 
-                (0..6).map(|_| { val = val >> 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
+                (0..3).map(|_| { val = val >> 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
             }
         };
 
