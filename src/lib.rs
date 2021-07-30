@@ -21,6 +21,14 @@ pub enum FileProperties {
     _MULTIPLE([bool; 6])
 }
 
+// impl AsRef<OsStr> for FileProperties {
+//     fn as_ref(&self) -> &OsStr {
+//         match self {
+            
+//         }
+//     }
+// }
+
 impl Add for FileProperties {
     type Output = Self;
     
@@ -43,12 +51,6 @@ impl Add for FileProperties {
         Self::_MULTIPLE(result_props)
     }
 }
-
-// impl AsRef<OsStr> for FileProperties {
-//     fn as_ref(&self) -> &OsStr {
-//         
-//     }
-// }
 
 impl FileProperties {
     const VARIANTS: [Self; 6] = [
@@ -367,7 +369,13 @@ pub struct RobocopyCommand<'a> {
 }
 
 impl<'a> RobocopyCommand<'a> {
-    pub fn new_quick(source: &'a Path, destination: &'a Path, files: Vec<File>, mode: CopyMode, buffered: bool, copy_empty_dirs: bool, ){
+    pub fn new_quick(
+        source: &'a Path, 
+        destination: &'a Path, 
+        files: Vec<File>, 
+        mode: CopyMode, 
+        buffered: bool, 
+        copy_empty_dirs: bool, ){
         
     }
     

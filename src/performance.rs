@@ -9,6 +9,7 @@ pub enum PerformanceChoice {
             // when adding this variant implies usage of the other variant
 }
 
+#[derive(Copy, Clone)]
 pub enum PerformanceOptions {
     PERFORMANCE_CHOICE_ONLY(PerformanceChoice),
     
@@ -77,12 +78,28 @@ impl Add for PerformanceOptions {
 }
 
 impl PerformanceOptions {
+
     fn index(&self) -> Option<usize>{
         match self {
             Self::DONT_OFFLOAD(_) => Some(0),
             Self::REQUEST_NETWORK_COMPRESSION(_) => Some(1),
             Self::COPY_RATHER_THAN_FOLLOW_LINK(_) => Some(2),
             _ => None,
+        }
+    }
+
+    pub fn single_properties(&self) -> Vec<PerformanceOptions> {
+        match self {
+            Self::_MULTIPLE(filters, choice) => {
+                let variants: [Self; 3] = [
+                    Self::DONT_OFFLOAD(*choice),
+                    Self::REQUEST_NETWORK_COMPRESSION(*choice),
+                    Self::COPY_RATHER_THAN_FOLLOW_LINK(*choice),
+                ];
+
+                variants.iter().zip(filters.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
+            },
+            attrib => vec![*attrib],
         }
     }
 

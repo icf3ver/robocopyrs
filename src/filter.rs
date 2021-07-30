@@ -1,6 +1,7 @@
 use std::{convert::TryInto, ops::Add};
 use crate::FileAttributes;
 
+#[derive(Clone)]
 pub enum FileExclusionFilter {
     Attributes(FileAttributes),
     PATH_OR_NAME(Vec<String>),
@@ -49,6 +50,13 @@ impl Add for FileExclusionFilter {
 }
 
 impl FileExclusionFilter {
+    const VARIANTS: [Self; 4] = [
+        Self::CHANGED,
+        Self::OLDER,
+        Self::NEWER,
+        Self::JUNCTION_POINTS
+    ];
+
     fn index(&self) -> Option<usize>{
         match self {
             Self::CHANGED => Some(0),
@@ -56,6 +64,15 @@ impl FileExclusionFilter {
             Self::NEWER => Some(2),
             Self::JUNCTION_POINTS => Some(3),
             _ => None,
+        }
+    }
+
+    pub fn single_properties(&self) -> Vec<FileExclusionFilter> {
+        match self {
+            Self::_MULTIPLE(attribs, path_or_name, props) => {
+                Self::VARIANTS.iter().zip(props.iter()).filter(|(_, exists)| **exists).map(|(variant, _)| variant.clone() ).collect()
+            },
+            prop => vec![prop.clone()],
         }
     }
 }
@@ -66,7 +83,6 @@ pub enum DirectoryExclusionFilter {
     JUNCTION_POINTS,
     _BOTH(Vec<String>)
 }
-
 
 impl Add for DirectoryExclusionFilter {
     type Output = Self;
@@ -92,7 +108,17 @@ impl Add for DirectoryExclusionFilter {
     }
 }
 
+impl DirectoryExclusionFilter {
+    fn single_properties(&self) -> Vec<DirectoryExclusionFilter> {
+        match self {
+            Self::_BOTH(path_or_name) => vec![Self::JUNCTION_POINTS, Self::PATH_OR_NAME(path_or_name.clone())],
+            Self::JUNCTION_POINTS => vec![Self::JUNCTION_POINTS],
+            Self::PATH_OR_NAME(path_or_name) => vec![Self::PATH_OR_NAME(path_or_name.clone())]
+        }
+    }
+}
 
+#[derive(Copy, Clone)]
 pub enum FileAndDirectoryExclusionFilter {
     EXTRA,
     LONELY,
@@ -122,6 +148,12 @@ impl Add for FileAndDirectoryExclusionFilter {
 }
 
 impl FileAndDirectoryExclusionFilter {
+    const VARIANTS: [Self; 3] = [
+        Self::EXTRA,
+        Self::LONELY,
+        Self::JUNCTION_POINTS
+    ];
+
     fn index(&self) -> Option<usize>{
         match self {
             Self::EXTRA => Some(0),
@@ -130,9 +162,18 @@ impl FileAndDirectoryExclusionFilter {
             _ => None,
         }
     }
+
+    pub fn single_properties(&self) -> Vec<FileAndDirectoryExclusionFilter> {
+        match self {
+            Self::_MULTIPLE(filters) => {
+                Self::VARIANTS.iter().zip(filters.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
+            },
+            attrib => vec![*attrib],
+        }
+    }
 }
 
-
+#[derive(Copy, Clone)]
 pub enum FileExclusionFilterException {
     MODIFIED,
     SAME,
@@ -162,12 +203,27 @@ impl Add for FileExclusionFilterException {
 }
 
 impl FileExclusionFilterException {
+    const VARIANTS: [Self; 3] = [
+        Self::MODIFIED,
+        Self::SAME,
+        Self::TWEAKED
+    ];
+
     fn index(&self) -> Option<usize>{
         match self {
             Self::MODIFIED => Some(0),
             Self::SAME => Some(1),
             Self::TWEAKED => Some(2),
             _ => None,
+        }
+    }
+
+    pub fn single_properties(&self) -> Vec<FileExclusionFilterException> {
+        match self {
+            Self::_MULTIPLE(filters) => {
+                Self::VARIANTS.iter().zip(filters.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
+            },
+            attrib => vec![*attrib],
         }
     }
 }
