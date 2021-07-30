@@ -103,11 +103,8 @@ pub enum DirectoryProperties {
     DATA,
     ATTRIBUTES,
     TIME_STAMPS,
-    NTFS_ACCESS_CONTROL_LIST,
-    OWNER_INFO,
-    AUDITING_INFO,
     ALL,
-    _MULTIPLE([bool; 6])
+    _MULTIPLE([bool; 3])
 }
 
 impl Add for DirectoryProperties {
@@ -116,7 +113,7 @@ impl Add for DirectoryProperties {
     fn add(self, rhs: Self) -> Self::Output {
         let mut result_props = match self {
             Self::_MULTIPLE(props) => props,
-            Self::ALL => [true; 6],
+            Self::ALL => [true; 3],
             prop => {
                 let mut val = 2_u8.pow(prop.index().unwrap() as u32) + 2_u8; 
                 (0..6).map(|_| { val = val >> 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
@@ -135,13 +132,10 @@ impl Add for DirectoryProperties {
 }
 
 impl DirectoryProperties {
-    const VARIANTS: [Self; 6] = [
+    const VARIANTS: [Self; 3] = [
         Self::DATA,
         Self::ATTRIBUTES,
         Self::TIME_STAMPS,
-        Self::NTFS_ACCESS_CONTROL_LIST,
-        Self::OWNER_INFO,
-        Self::AUDITING_INFO
     ];
 
     fn index(&self) -> Option<usize>{
@@ -149,9 +143,6 @@ impl DirectoryProperties {
             Self::DATA => Some(0),
             Self::ATTRIBUTES => Some(1),
             Self::TIME_STAMPS => Some(2),
-            Self::NTFS_ACCESS_CONTROL_LIST => Some(3),
-            Self::OWNER_INFO => Some(4),
-            Self::AUDITING_INFO => Some(5),
             _ => None,
         }
     }
@@ -172,13 +163,10 @@ impl DirectoryProperties {
             Self::DATA => "/dcopy:D",
             Self::ATTRIBUTES => "/dcopy:A",
             Self::TIME_STAMPS => "/dcopy:T",
-            Self::NTFS_ACCESS_CONTROL_LIST => "/dcopy:S",
-            Self::OWNER_INFO => "/dcopy:O",
-            Self::AUDITING_INFO => "/dcopy:U",
             Self::ALL => "/dcopy:DATSOU",
             Self::_MULTIPLE(props) => {
-                let part = ['D', 'A', 'T', 'S', 'O', 'U'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
-                full = String::from("/copy:") + part.as_str();
+                let part = ['D', 'A', 'T'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
+                full = String::from("/dcopy:") + part.as_str();
                 full.as_str()
             }
         })
