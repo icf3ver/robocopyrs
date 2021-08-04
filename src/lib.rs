@@ -1,15 +1,47 @@
+//! Robocopyrs is a wrapper for the robocopy command in Windows.
+//! 
+//! ```no_run
+//! use robocopyrs::RobocopyCommand;
+//! use robocopyrs::CopyMode;
+//! use robocopyrs::FileProperties;
+//! use robocopyrs::DirectoryProperties;
+//! use std::path::Path;
+//! 
+//! let command = RobocopyCommand {
+//!     source: Path::new("./source"),
+//!     destination: Path::new("./destination"),
+//!     copy_mode: Some(CopyMode::RESTARTABLE_MODE_BACKUP_MODE_FALLBACK),
+//!     structure_and_size_zero_files_only: true,
+//!     copy_file_properties: Some(FileProperties::all()),
+//!     copy_dir_properties: Some(DirectoryProperties::all()),
+//!     ..RobocopyCommand::default()
+//! };
+//! 
+//! command.execute().unwrap();
+//! ```
+
 pub mod filter;
 pub mod performance;
 pub mod logging;
+pub mod exit_codes;
 
 use std::{convert::{TryFrom, TryInto}, ffi::OsString, ops::Add, path::Path, process::Command};
+use exit_codes::{ErrExitCode, OkExitCode};
 use filter::Filter;
-use performance::PerformanceOptions;
+use performance::{PerformanceOptions, RetrySettings};
 use logging::LoggingSettings;
+
+/// For enums that allow for multiple variants to be 
+/// joined into a single variant
+pub trait MultipleVariant: Sized + Add<Self> {
+    /// get each variant in a multiple-variant
+    fn single_variants(&self) -> Vec<Self>;
+}
 
 /// The file Properties
 /// Default is both Data and Attributes
-#[derive(Copy, Clone)]
+#[allow(non_camel_case_types)]
+#[derive(Debug, Copy, Clone)]
 pub enum FileProperties {
     DATA,
     ATTRIBUTES,
@@ -17,30 +49,63 @@ pub enum FileProperties {
     NTFS_ACCESS_CONTROL_LIST,
     OWNER_INFO,
     AUDITING_INFO,
-    ALL,
-    _MULTIPLE([bool; 6])
+    _MULTIPLE([bool; 6]),
 }
 
 impl Add for FileProperties {
     type Output = Self;
     
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn add(self, rhs: Self) -> Self::Output {
         let mut result_props = match self {
             Self::_MULTIPLE(props) => props,
-            Self::ALL => [true; 6],
             prop => {
-                let mut val = 2_u8.pow(prop.index().unwrap() as u32) + 2_u8; 
-                (0..6).map(|_| { val = val >> 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
+                let mut val = 2_u8.pow(prop.index_of().unwrap() as u32) + 2_u8; 
+                (0..6).map(|_| { val >>= 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
             }
         };
 
         match rhs {
             Self::_MULTIPLE(props) => result_props = result_props.iter().zip(props.iter()).map(|(a, b)| *a && *b).collect::<Vec<bool>>().try_into().unwrap(),
-            Self::ALL => (),
-            prop => result_props[prop.index().unwrap()] = true
+            prop => result_props[prop.index_of().unwrap()] = true
         }
 
         Self::_MULTIPLE(result_props)
+    }
+}
+
+impl From<&FileProperties> for OsString {
+    fn from(fp: &FileProperties) -> Self {
+        let full ;
+        OsString::from(match fp {
+            FileProperties::DATA => "/copy:D",
+            FileProperties::ATTRIBUTES => "/copy:A",
+            FileProperties::TIME_STAMPS => "/copy:T",
+            FileProperties::NTFS_ACCESS_CONTROL_LIST => "/copy:S",
+            FileProperties::OWNER_INFO => "/copy:O",
+            FileProperties::AUDITING_INFO => "/copy:U",
+            FileProperties::_MULTIPLE(props) => {
+                let part = ['D', 'A', 'T', 'S', 'O', 'U'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
+                full = String::from("/copy:") + part.as_str();
+                full.as_str()
+            }
+        })
+    }
+}
+impl From<FileProperties> for OsString {
+    fn from(fp: FileProperties) -> Self {
+        (&fp).into()
+    }
+}
+
+impl MultipleVariant for FileProperties {
+    fn single_variants(&self) -> Vec<Self> {
+        match self {
+            Self::_MULTIPLE(props) => {
+                Self::VARIANTS.iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
+            },
+            prop => vec![*prop],
+        }
     }
 }
 
@@ -54,7 +119,7 @@ impl FileProperties {
         Self::AUDITING_INFO
     ];
 
-    fn index(&self) -> Option<usize>{
+    fn index_of(&self) -> Option<usize>{
         match self {
             Self::DATA => Some(0),
             Self::ATTRIBUTES => Some(1),
@@ -66,68 +131,82 @@ impl FileProperties {
         }
     }
 
-    pub fn single_properties(&self) -> Vec<FileProperties> {
-        match self {
-            Self::_MULTIPLE(props) => {
-                Self::VARIANTS.iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
-            },
-            Self::ALL => Self::VARIANTS.to_vec(),
-            prop => vec![*prop],
-        }
+    /// Returns a variant containing all available file properties.
+    #[allow(unused)]
+    pub fn all() -> Self {
+        Self::_MULTIPLE([true; 6])
     }
-    
-    pub fn as_os_string(&self) -> OsString {
-        let full ;
-        OsString::from(match self {
-            Self::DATA => "/copy:D",
-            Self::ATTRIBUTES => "/copy:A",
-            Self::TIME_STAMPS => "/copy:T",
-            Self::NTFS_ACCESS_CONTROL_LIST => "/copy:S",
-            Self::OWNER_INFO => "/copy:O",
-            Self::AUDITING_INFO => "/copy:U",
-            Self::ALL => "/copy:DATSOU",
-            Self::_MULTIPLE(props) => {
-                let part = ['D', 'A', 'T', 'S', 'O', 'U'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
-                full = String::from("/copy:") + part.as_str();
-                full.as_str()
-            }
-        })
+
+    /// Returns a variant containing no file properties.
+    #[allow(unused)]
+    pub fn none() -> Self {
+        Self::_MULTIPLE([false; 6])
     }
 }
 
 
 /// The directory Properties
 /// Default is both Data and Attributes
-#[derive(Copy, Clone)]
+#[allow(non_camel_case_types)]
+#[derive(Debug, Copy, Clone)]
 pub enum DirectoryProperties {
     DATA,
     ATTRIBUTES,
     TIME_STAMPS,
-    ALL,
     _MULTIPLE([bool; 3])
 }
 
 impl Add for DirectoryProperties {
     type Output = Self;
     
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn add(self, rhs: Self) -> Self::Output {
         let mut result_props = match self {
             Self::_MULTIPLE(props) => props,
-            Self::ALL => [true; 3],
             prop => {
-                let mut val = 2_u8.pow(prop.index().unwrap() as u32) + 2_u8; 
-                (0..3).map(|_| { val = val >> 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
+                let mut val = 2_u8.pow(prop.index_of().unwrap() as u32) + 2_u8; 
+                (0..3).map(|_| { val >>= 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
             }
         };
 
         match rhs {
-            Self::_MULTIPLE(props)
-             => result_props = result_props.iter().zip(props.iter()).map(|(a, b)| *a && *b).collect::<Vec<bool>>().try_into().unwrap(),
-            Self::ALL => (),
-            prop => result_props[prop.index().unwrap()] = true
+            Self::_MULTIPLE(props) => result_props = result_props.iter().zip(props.iter()).map(|(a, b)| *a && *b).collect::<Vec<bool>>().try_into().unwrap(),
+            prop => result_props[prop.index_of().unwrap()] = true
         }
 
         Self::_MULTIPLE(result_props)
+    }
+}
+
+impl From<&DirectoryProperties> for OsString {
+    fn from(dp: &DirectoryProperties) -> Self {
+        let full ;
+        OsString::from(match dp {
+            DirectoryProperties::DATA => "/dcopy:D",
+            DirectoryProperties::ATTRIBUTES => "/dcopy:A",
+            DirectoryProperties::TIME_STAMPS => "/dcopy:T",
+            DirectoryProperties::_MULTIPLE(props) => {
+                let part = ['D', 'A', 'T'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
+                full = String::from("/dcopy:") + part.as_str();
+                full.as_str()
+            }
+        })
+    }
+}
+impl From<DirectoryProperties> for OsString {
+    fn from(dp: DirectoryProperties) -> Self {
+        (&dp).into()
+    }
+}
+
+impl MultipleVariant for DirectoryProperties {
+    fn single_variants(&self) -> Vec<Self> {
+        match self {
+            Self::_MULTIPLE(props) => {
+                Self::VARIANTS.iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
+            },
+            prop => vec![*prop],
+        }
     }
 }
 
@@ -138,7 +217,7 @@ impl DirectoryProperties {
         Self::TIME_STAMPS,
     ];
 
-    fn index(&self) -> Option<usize>{
+    fn index_of(&self) -> Option<usize>{
         match self {
             Self::DATA => Some(0),
             Self::ATTRIBUTES => Some(1),
@@ -146,35 +225,23 @@ impl DirectoryProperties {
             _ => None,
         }
     }
-    
-    pub fn single_properties(&self) -> Vec<DirectoryProperties> {
-        match self {
-            Self::_MULTIPLE(props) => {
-                Self::VARIANTS.iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
-            },
-            Self::ALL => Self::VARIANTS.to_vec(),
-            prop => vec![*prop],
-        }
+
+    /// Returns a variant containing all available directory properties.
+    #[allow(unused)]
+    pub fn all() -> Self {
+        Self::_MULTIPLE([true; 3])
     }
 
-    pub fn as_os_string(&self) -> OsString {
-        let full ;
-        OsString::from(match self {
-            Self::DATA => "/dcopy:D",
-            Self::ATTRIBUTES => "/dcopy:A",
-            Self::TIME_STAMPS => "/dcopy:T",
-            Self::ALL => "/dcopy:DAT",
-            Self::_MULTIPLE(props) => {
-                let part = ['D', 'A', 'T'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
-                full = String::from("/dcopy:") + part.as_str();
-                full.as_str()
-            }
-        })
+    /// Returns a variant containing no directory properties.
+    #[allow(unused)]
+    pub fn none() -> Self {
+        Self::_MULTIPLE([false; 3])
     }
 }
 
 
-#[derive(Copy, Clone)]
+#[allow(non_camel_case_types)]
+#[derive(Debug, Copy, Clone)]
 pub enum FileAttributes {
     READ_ONLY,
     ARCHIVE,
@@ -190,25 +257,60 @@ pub enum FileAttributes {
 impl Add for FileAttributes {
     type Output = Self;
     
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn add(self, rhs: Self) -> Self::Output {
         let mut result_attribs = match self {
             Self::_MULTIPLE(attribs) => attribs,
             attrib => {
-                let mut val = 2_u8.pow(attrib.index().unwrap() as u32) * 2_u8; 
-                (0..6).map(|_| { val = val >> 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
+                let mut val = 2_u8.pow(attrib.index_of().unwrap() as u32) * 2_u8; 
+                (0..6).map(|_| { val >>= 1; val == 1 }).collect::<Vec<bool>>().try_into().unwrap()
             }
         };
 
         match rhs {
-            Self::_MULTIPLE(attribs)
-             => result_attribs = result_attribs.iter().zip(attribs.iter()).map(|(a, b)| *a && *b).collect::<Vec<bool>>().try_into().unwrap(),
-            attrib => result_attribs[attrib.index().unwrap()] = true
+            Self::_MULTIPLE(attribs) => result_attribs = result_attribs.iter().zip(attribs.iter()).map(|(a, b)| *a && *b).collect::<Vec<bool>>().try_into().unwrap(),
+            attrib => result_attribs[attrib.index_of().unwrap()] = true
         }
 
         Self::_MULTIPLE(result_attribs)
     }
 }
 
+impl From<&FileAttributes> for OsString {
+    fn from(fa: &FileAttributes) -> Self {
+        let part ;
+        OsString::from(match fa {
+            FileAttributes::READ_ONLY => "R",
+            FileAttributes::ARCHIVE => "A",
+            FileAttributes::SYSTEM => "S",
+            FileAttributes::HIDDEN => "H",
+            FileAttributes::COMPRESSED => "C",
+            FileAttributes::NOT_CONTENT_INDEXED => "N",
+            FileAttributes::ENCRYPTED => "E",
+            FileAttributes::TEMPORARY => "T",
+            FileAttributes::_MULTIPLE(props) => {
+                part = ['R', 'A', 'S', 'H', 'C', 'N', 'E', 'T'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
+                part.as_str()
+            }
+        })
+    }
+}
+impl From<FileAttributes> for OsString {
+    fn from(fa: FileAttributes) -> Self {
+        (&fa).into()
+    }
+}
+
+impl MultipleVariant for FileAttributes {
+    fn single_variants(&self) -> Vec<Self> {
+        match self {
+            Self::_MULTIPLE(attribs) => {
+                Self::VARIANTS.iter().zip(attribs.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
+            },
+            attrib => vec![*attrib],
+        }
+    }
+}
 
 impl FileAttributes {
     const VARIANTS: [Self; 8] = [
@@ -222,7 +324,7 @@ impl FileAttributes {
         Self::TEMPORARY
     ];
 
-    fn index(&self) -> Option<usize>{
+    fn index_of(&self) -> Option<usize>{
         match self {
             Self::READ_ONLY => Some(0),
             Self::ARCHIVE => Some(1),
@@ -235,199 +337,173 @@ impl FileAttributes {
             _ => None,
         }
     }
-    
-    pub fn single_properties(&self) -> Vec<FileAttributes> {
-        match self {
-            Self::_MULTIPLE(attribs) => {
-                Self::VARIANTS.iter().zip(attribs.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&Self, &bool, Vec<Self>, Vec<bool>>().0
-            },
-            attrib => vec![*attrib],
-        }
+
+    /// Returns a variant containing all available file attributes.
+    #[allow(unused)]
+    pub fn all() -> Self {
+        Self::_MULTIPLE([true; 8])
     }
-    
-    pub fn as_os_string(&self) -> OsString {
-        let part ;
-        OsString::from(match self {
-            Self::READ_ONLY => "R",
-            Self::ARCHIVE => "A",
-            Self::SYSTEM => "S",
-            Self::HIDDEN => "H",
-            Self::COMPRESSED => "C",
-            Self::NOT_CONTENT_INDEXED => "N",
-            Self::ENCRYPTED => "E",
-            Self::TEMPORARY => "T",
-            Self::_MULTIPLE(props) => {
-                part = ['R', 'A', 'S', 'H', 'C', 'N', 'E', 'T'].iter().zip(props.iter()).filter(|(_, exists)| **exists).into_iter().unzip::<&char, &bool, String, Vec<bool>>().0;
-                part.as_str()
-            }
-        })
+
+    /// Returns a variant containing no file attributes.
+    #[allow(unused)]
+    pub fn none() -> Self {
+        Self::_MULTIPLE([false; 8])
     }
 }
 
 
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
 pub enum CopyMode {
     RESTARTABLE_MODE,
     BACKUP_MODE,
     RESTARTABLE_MODE_BACKUP_MODE_FALLBACK
 }
 
-impl CopyMode {
-    pub fn as_os_string(&self) -> OsString {
-        match self {
-            Self::RESTARTABLE_MODE => OsString::from("/z"),
-            Self::BACKUP_MODE => OsString::from("/b"),
-            Self::RESTARTABLE_MODE_BACKUP_MODE_FALLBACK => OsString::from("/zb"),
+impl From<&CopyMode> for OsString {
+    fn from(cm: &CopyMode) -> OsString {
+        match cm {
+            CopyMode::RESTARTABLE_MODE => OsString::from("/z"),
+            CopyMode::BACKUP_MODE => OsString::from("/b"),
+            CopyMode::RESTARTABLE_MODE_BACKUP_MODE_FALLBACK => OsString::from("/zb"),
         }
     }
 }
+impl From<CopyMode> for OsString {
+    fn from(cm: CopyMode) -> Self {
+        (&cm).into()
+    }
+}
 
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
 pub enum Move {
     FILES,
     FILES_AND_DIRS,
 }
 
-impl Move {
-    pub fn as_os_string(&self) -> OsString {
-        match self {
-            Self::FILES => OsString::from("/mov"),
-            Self::FILES_AND_DIRS => OsString::from("/move"),
+impl From<&Move> for OsString {
+    fn from(mv: &Move) -> Self {
+        match mv {
+            Move::FILES => OsString::from("/mov"),
+            Move::FILES_AND_DIRS => OsString::from("/move"),
         }
+    }
+}
+impl From<Move> for OsString {
+    fn from(mv: Move) -> Self {
+        (&mv).into()
     }
 }
 
 
+#[derive(Debug, Copy, Clone)]
 pub enum PostCopyActions {
-    ADD_ATTRIBS_TO_FILES(FileAttributes),
-    RMV_ATTRIBS_FROM_FILES(FileAttributes),
+    AddAttribsToFiles(FileAttributes),
+    RmvAttribsFromFiles(FileAttributes),
     _MULTIPLE(FileAttributes, FileAttributes)
 }
 
+impl Add for PostCopyActions {
+    type Output = Self;
 
-impl PostCopyActions {
-    pub fn as_os_string_vec(&self) -> Vec<OsString> {
-        match self {
-            PostCopyActions::ADD_ATTRIBS_TO_FILES(attribs) => vec![OsString::from(String::from("/a+:") + attribs.as_os_string().to_str().unwrap())],
-            PostCopyActions::RMV_ATTRIBS_FROM_FILES(attribs) => vec![OsString::from(String::from("/a-:") + attribs.as_os_string().to_str().unwrap())],
-            PostCopyActions::_MULTIPLE(add_attribs, rmv_attribs) => vec![OsString::from(String::from("/a+:") + add_attribs.as_os_string().to_str().unwrap()), OsString::from(String::from("/a-:") + rmv_attribs.as_os_string().to_str().unwrap())],
+    fn add(self, rhs: Self) -> Self::Output {
+        let (mut add_attribs, mut rmv_attribs) = match self {
+            Self::_MULTIPLE(add, rmv) => (Some(add), Some(rmv)),
+            Self::AddAttribsToFiles(attribs) => (None, Some(attribs)),
+            Self::RmvAttribsFromFiles(attribs) => (Some(attribs), None)
+        };
+
+        match rhs {
+            Self::_MULTIPLE(add, rmv) => {
+                if let Some(attribs) = add_attribs {
+                    add_attribs = Some(attribs + add);
+                }
+                if let Some(attribs) = rmv_attribs{
+                    rmv_attribs = Some(attribs + rmv);
+                }
+            },
+            Self::AddAttribsToFiles(add) => {
+                if let Some(attribs) = add_attribs {
+                    add_attribs = Some(attribs + add);
+                }
+            },
+            Self::RmvAttribsFromFiles(rmv) => {
+                if let Some(attribs) = rmv_attribs{
+                    rmv_attribs = Some(attribs + rmv);
+                }
+            }
+        }
+
+        match (add_attribs, rmv_attribs) {
+            (Some(add), Some(rmv)) => Self::_MULTIPLE(add, rmv),
+            (None, Some(rmv)) => Self::RmvAttribsFromFiles(rmv),
+            (Some(add), None) => Self::AddAttribsToFiles(add),
+            (None, None) => panic!("use default rather than PostCopyActions::_MULTIPLE(FileAttributes::none(), FileAttributes::none())")
         }
     }
 }
 
+impl From<&PostCopyActions> for Vec<OsString> {
+    fn from(pca: &PostCopyActions) -> Self {
+        match pca {
+            PostCopyActions::AddAttribsToFiles(attribs) => vec![OsString::from(String::from("/a+:") + Into::<OsString>::into(attribs).to_str().unwrap())],
+            PostCopyActions::RmvAttribsFromFiles(attribs) => vec![OsString::from(String::from("/a-:") + Into::<OsString>::into(attribs).to_str().unwrap())],
+            PostCopyActions::_MULTIPLE(add_attribs, rmv_attribs) => vec![OsString::from(String::from("/a+:") + Into::<OsString>::into(add_attribs).to_str().unwrap()), OsString::from(String::from("/a-:") + Into::<OsString>::into(rmv_attribs).to_str().unwrap())],
+        }
+    }
+}
+impl From<PostCopyActions> for Vec<OsString> {
+    fn from(pca: PostCopyActions) -> Self {
+        (&pca).into()
+    }
+}
+
+impl MultipleVariant for PostCopyActions {
+    fn single_variants(&self) -> Vec<Self> {
+        match self {
+            Self::_MULTIPLE(add, rmv) => vec![Self::AddAttribsToFiles(*add), Self::RmvAttribsFromFiles(*rmv)],
+            variant => vec![*variant]
+        }
+    }
+}
+
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
 pub enum FilesystemOptions {
     FAT_FILE_NAMES,
     ASSUME_FAT_FILE_TIMES,
-    DISSABLE_LONG_PATHS,
+    DISABLE_LONG_PATHS,
     _MULTIPLE([bool; 3])
 }
 
-impl FilesystemOptions {
-    pub fn as_os_string_vec(&self) -> Vec<OsString> {
-        match self {
-            Self::FAT_FILE_NAMES => vec![OsString::from("/fat")],
-            Self::ASSUME_FAT_FILE_TIMES => vec![OsString::from("/fft")],
-            Self::DISSABLE_LONG_PATHS => vec![OsString::from("/256")],
-            Self::_MULTIPLE(options) => ["/fat", "/fft", "/256"].iter().zip(options.iter()).filter(|(_, exists)| **exists).map(|(option, _)| OsString::from(*option)).collect()
+impl From<&FilesystemOptions> for Vec<OsString> {
+    fn from(fso: &FilesystemOptions) -> Self {
+        match fso {
+            FilesystemOptions::FAT_FILE_NAMES => vec![OsString::from("/fat")],
+            FilesystemOptions::ASSUME_FAT_FILE_TIMES => vec![OsString::from("/fft")],
+            FilesystemOptions::DISABLE_LONG_PATHS => vec![OsString::from("/256")],
+            FilesystemOptions::_MULTIPLE(options) => ["/fat", "/fft", "/256"].iter().zip(options.iter()).filter(|(_, exists)| **exists).map(|(option, _)| OsString::from(*option)).collect()
         }
     }
 }
-
-pub struct RetrySettings {
-    pub specify_retries_failed_copies: Option<usize>, // default 1 million set in registry
-    pub specify_wait_between_retries: Option<usize>, // default 30 seconds set in registry
-    pub save_specifications: bool,
-    
-    pub await_share_names_def: bool,
-}
-
-impl RetrySettings {
-    pub fn as_os_string_vec(&self) -> Vec<OsString> {
-        let mut result = Vec::new();
-
-        if let Some(specified) = self.specify_retries_failed_copies {
-            result.push(OsString::from(format!("/r:{}", specified)))
-        }
-        if let Some(specified) = self.specify_wait_between_retries {
-            result.push(OsString::from(format!("/w:{}", specified)))
-        }
-        if self.save_specifications {
-            result.push(OsString::from("/reg"))
-        }
-        if self.await_share_names_def {
-            result.push(OsString::from("/tbd"))
-        }
-
-        result
+impl From<FilesystemOptions> for Vec<OsString> {
+    fn from(fso: FilesystemOptions) -> Self {
+        (&fso).into()
     }
 }
 
 
-#[repr(i8)]
-pub enum OkExitCode{
-    NO_CHANGE = 0,
-    SOME_COPIES = 1,
-    EXTRA_FOUND = 2,
-    SOME_COPIES_EXTRA_FOUND = 3,
-    MISSMATCHES = 4,
-    SOME_COPIES_MISSMATCHES = 5,
-    MISSMATCHES_EXTRA_FOUND = 6,
-    SOME_COPIES_MISSMATCHES_EXTRA_FOUND = 7,
-}
-
-#[derive(Debug)]
-#[repr(i8)]
-pub enum ErrExitCode{
-    FAIL = 8,
-    SOME_COPIES_FAIL = 9,
-    FAIL_EXTRA_FOUND = 10,
-    SOME_COPIES_FAIL_EXTRA_FOUND = 11,
-    FAIL_MISSMATCHES = 12,
-    SOME_COPIES_FAIL_MISSMATCHES = 13,
-    FAIL_MISSMATCHES_EXTRA_FOUND = 14,
-    SOME_COPIES_FAIL_MISSMATCHES_EXTRA_FOUND = 15,
-    NO_CHANGE_FATAL_ERROR = 16,
-}
-
-impl TryFrom<i8> for OkExitCode {
-    type Error = Result<ErrExitCode, (&'static str, i8)>;
-
-    fn try_from(n: i8) -> Result<Self, Self::Error> {
-        if n < 8 {
-            Ok(
-                match n {
-                    0 => OkExitCode::NO_CHANGE,
-                    1 => OkExitCode::SOME_COPIES,
-                    2 => OkExitCode::EXTRA_FOUND,
-                    3 => OkExitCode::SOME_COPIES_EXTRA_FOUND,
-                    4 => OkExitCode::MISSMATCHES,
-                    5 => OkExitCode::SOME_COPIES_MISSMATCHES,
-                    6 => OkExitCode::MISSMATCHES_EXTRA_FOUND,
-                    7 => OkExitCode::SOME_COPIES_MISSMATCHES_EXTRA_FOUND,
-                    _ => unreachable!(),
-                }
-            )
-        } else {
-            Err(
-                match n {
-                    8 => Ok(ErrExitCode::FAIL),
-                    9 => Ok(ErrExitCode::SOME_COPIES_FAIL),
-                    10 => Ok(ErrExitCode::FAIL_EXTRA_FOUND),
-                    11 => Ok(ErrExitCode::SOME_COPIES_FAIL_EXTRA_FOUND),
-                    12 => Ok(ErrExitCode::FAIL_MISSMATCHES),
-                    13 => Ok(ErrExitCode::SOME_COPIES_FAIL_MISSMATCHES),
-                    14 => Ok(ErrExitCode::FAIL_MISSMATCHES_EXTRA_FOUND),
-                    15 => Ok(ErrExitCode::SOME_COPIES_FAIL_MISSMATCHES_EXTRA_FOUND),
-                    16 => Ok(ErrExitCode::NO_CHANGE_FATAL_ERROR),
-                    c => Err(("Invalid exit code", c)),
-                }
-            )
-        }
-    }
-}
-
+/// Robocopy command Wrapper
+/// 
+#[derive(Debug, Clone)]
 pub struct RobocopyCommand<'a> {
     pub source: &'a Path,
     pub destination: &'a Path,
-    pub files: Vec<&'a str>, // wildcard chars are supported
+    /// wildcard characters are supported
+    pub files: Vec<&'a str>,
     
     pub copy_mode: Option<CopyMode>,
     pub unbuffered: bool,
@@ -437,7 +513,7 @@ pub struct RobocopyCommand<'a> {
     pub only_copy_top_n_levels: Option<usize>,
     pub structure_and_size_zero_files_only: bool,
     
-    pub copy_file_properties: Option<DirectoryProperties>,
+    pub copy_file_properties: Option<FileProperties>,
     pub copy_dir_properties: Option<DirectoryProperties>,
 
     pub filter: Option<Filter<'a>>,
@@ -457,7 +533,34 @@ pub struct RobocopyCommand<'a> {
     // todo job options
 }
 
+impl<'a> Default for RobocopyCommand<'a> {
+    fn default() -> Self {
+        RobocopyCommand {
+            source: Path::new("."),
+            destination: Path::new("."),
+            files: Vec::new(),
+            copy_mode: None,
+            unbuffered: false,
+            empty_dir_copy: false,
+            remove_files_and_dirs_not_in_src: false,
+            only_copy_top_n_levels: None,
+            structure_and_size_zero_files_only: false,
+            copy_file_properties: None,
+            copy_dir_properties: None,
+            filter: None,
+            filesystem_options: None,
+            performance_options: None,
+            retry_settings: None,
+            logging: None,
+            mv: None,
+            post_copy_actions: None,
+            overwrite_destination_dir_sec_settings_when_mirror: false,
+        }
+    }
+}
+
 impl<'a> RobocopyCommand<'a> {
+    /// Execute the command
     pub fn execute(&self) -> Result<OkExitCode, Result<ErrExitCode, (&'static str, i8)>>{
         let mut command = Command::new("robocopy");
         
@@ -468,7 +571,7 @@ impl<'a> RobocopyCommand<'a> {
         self.files.iter().for_each(|file| {command.arg(file);});
 
         if let Some(mode) = &self.copy_mode {
-            command.arg(mode.as_os_string());
+            command.arg(Into::<OsString>::into(mode));
         }
         if self.unbuffered {
             command.arg("/j");
@@ -500,35 +603,35 @@ impl<'a> RobocopyCommand<'a> {
         }
 
         if let Some(properties) = self.copy_file_properties {
-            command.arg(properties.as_os_string());
+            command.arg(Into::<OsString>::into(properties));
         }
         if let Some(properties) = self.copy_dir_properties {
-            command.arg(properties.as_os_string());
+            command.arg(Into::<OsString>::into(properties));
         }
         
         if let Some(filter) = &self.filter {
-            filter.as_os_string_vec().into_iter().for_each(|arg| {command.arg(arg);});
+            Into::<Vec<OsString>>::into(filter).into_iter().for_each(|arg| {command.arg(arg);});
         }
         if let Some(options) = &self.filesystem_options {
-            options.as_os_string_vec().into_iter().for_each(|arg| {command.arg(arg);});
+            Into::<Vec<OsString>>::into(options).into_iter().for_each(|arg| {command.arg(arg);});
         }        
         if let Some(options) = &self.performance_options {
-            options.as_os_string_vec().into_iter().for_each(|arg| {command.arg(arg);});
+            Into::<Vec<OsString>>::into(options).into_iter().for_each(|arg| {command.arg(arg);});
         }        
         if let Some(settings) = &self.retry_settings {
-            settings.as_os_string_vec().into_iter().for_each(|arg| {command.arg(arg);});
+            Into::<Vec<OsString>>::into(settings).into_iter().for_each(|arg| {command.arg(arg);});
         }
 
         if let Some(logging) = &self.logging {
-            command.arg(logging.as_os_string());
+            command.arg(Into::<OsString>::into(logging));
         }
 
         if let Some(mv) = &self.mv {
-            command.arg(mv.as_os_string());
+            command.arg(Into::<OsString>::into(mv));
         }
        
         if let Some(actions) = &self.post_copy_actions {
-            actions.as_os_string_vec().into_iter().for_each(|arg| {command.arg(arg);});
+            Into::<Vec<OsString>>::into(actions).into_iter().for_each(|arg| {command.arg(arg);});
         }
 
         let exit_code = command.status().expect("failed to execute robocopy")
