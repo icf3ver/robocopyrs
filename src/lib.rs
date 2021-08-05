@@ -1,6 +1,6 @@
 //! Robocopyrs is a wrapper for the robocopy command in Windows.
 //! 
-//! ```no_run
+//! ```ignore
 //! use robocopyrs::RobocopyCommand;
 //! use robocopyrs::CopyMode;
 //! use robocopyrs::FileProperties;
