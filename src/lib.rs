@@ -17,7 +17,7 @@
 //!     ..RobocopyCommand::default()
 //! };
 //! 
-//! command.execute().unwrap();
+//! command.execute()?;
 //! ```
 
 pub mod filter;

@@ -6,3 +6,7 @@ authors = ["Lucas Ballmer"]
 description = "A wrapper for the robocopy command in Windows"
 license = "MIT"
 readme = "./README.md"
+repository = "https://github.com/littleTitan/robocopyrs"
+documentation = "https://docs.rs/robocopyrs"
+keywords = ["robocopy", "windows"]
+categories = ["filesystem", "os::windows-apis"]
